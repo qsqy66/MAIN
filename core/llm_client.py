@@ -1,7 +1,15 @@
+from pathlib import Path
+import sys
+root_path = Path(__file__).parent.parent
+if str(root_path) not in sys.path:
+    sys.path.append(str(root_path))
+
+
 from openai import AsyncOpenAI,APITimeoutError,APIConnectionError,APIError
 from config import settings
 import structlog
 import asyncio
+
 
 logger = structlog.get_logger(__name__)
 
@@ -38,7 +46,7 @@ class LLMClient():
         }
         
         if tools:
-            kwargs.get("tools") = tools
+            kwargs["tools"] = tools
         
         for attempt in range(settings.TOOL_MAX_RETRIES):
             try:
@@ -96,7 +104,7 @@ class LLMClient():
             }
             
             if tools:
-                kwargs.get("tools") = tools
+                kwargs["tools"] = tools
             
             for attempt in range(settings.LLM_MAX_RETRIES):
                 try:
@@ -151,3 +159,15 @@ class LLMClient():
         )
         
         return resp.choices[0].message.content
+    
+    async def close(self):
+        await self._client.close()
+        
+_llm_client:LLMClient | None = None        
+
+def get_llm_client():
+    
+    global _llm_client
+    if _llm_client is None:
+        _llm_client = LLMClient()
+    return _llm_client
