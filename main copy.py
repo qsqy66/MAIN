@@ -7,7 +7,7 @@ logger = get_logger(__name__)
 
 async def main():
     agent = AgentLoop()
-    session_id = "text_1"
+    session_id = "text_2"
 
     while(True):
         query = input("请输入问题：")

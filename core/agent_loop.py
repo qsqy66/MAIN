@@ -33,10 +33,10 @@ class AgentLoop():
     async def run(
         self,
         session_id,
-        query: str,
         tools: list,
         memory,
         history: list,
+        query: str,
     ):
 
         messages = history.copy() if history else []
