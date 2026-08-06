@@ -29,14 +29,16 @@ class AgentLoop():
     async def run(
         self,
         session_id,
-        query,
-        history:list|None = None,
-        tools:list|None = None,
-        memory:list|None = None,
+        query: str,
+        tools: list,
+        memory,
+        history: list,
     ):
+
         messages = history.copy() if history else []
         messages.insert(0, {"role":"system","content":SYSTEM_PROMPT})
         messages.append({"role":"user","content":query})
+        await memory.append_history(session_id, {"role":"user","content":query})
         
         for loop in range(15):
             try:
@@ -45,7 +47,11 @@ class AgentLoop():
                     tools = tools if tools else None
                     )
             except Exception as e:
-                return
+                logger.error(
+                    f"loop_{loop+1}_llm_error",
+                    error = f"模型调用异常，请稍后重试，错误信息：{str(e)}"
+                )
+                continue
             
             
             choice = resp.choices[0]
@@ -78,7 +84,6 @@ class AgentLoop():
                         tcName = tc.function.name,
                         arguments = tc_args,
                         result = result
-                        
                     )
                     
 
@@ -88,29 +93,11 @@ class AgentLoop():
                                         f"loop_{loop+1}_has_no_toolcall",
                                         content = choice.message.content
                                     )
-                # # 兜底逻辑：检测模型嘴上说调用工具，但没有输出tool_call
-                # trigger_words = ["计算器", "调用工具", "使用工具", "excel", "联网搜索"]
-                # need_retry = any(word in chat_content for word in trigger_words)
-                # if need_retry:
-                #     logger.info("模型仅文字声明调用工具，无tool_call，继续引导")
-                #     messages.append({"role":"assistant", "content": chat_content})
-                #     continue
-                # 正常输出最终答案
-                return choice.message.content
+                
+                await memory.append_history(session_id, {"role":"assistant","content":chat_content})
+                return chat_content
             
         return "处理步骤达到上限，请简化问题重试"
             
             
-async def main():
-    agent = AgentLoop()
-    query = "计算一下（34+66）*18"
-    answer = await agent.run(
-            session_id = 1,
-            query = query,
-            tools = TOOLS_SCHEMA
-        )
-    print(answer)
-
-if __name__ == "__main__":
-    asyncio.run(main())
     
