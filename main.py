@@ -1,5 +1,5 @@
 from core.agent_loop import AgentLoop
-from schemas.tools import TOOLS_SCHEMA
+from tools.registry import TOOLS_SCHEMA
 import asyncio
 from memory.redis import RedisMemory
 from structlog import get_logger
@@ -15,7 +15,7 @@ async def main():
         redis_memory = RedisMemory()
         await redis_memory.connect()
         history = await redis_memory.get_history("text_1")
-        logger.debug(f"history_loaded", count=f"读取到{len(history)}条历史记录")
+        logger.debug(f"history_loaded", countz=f"读取到{len(history)}条历史记录")
         
         answer = await agent.run(
                     session_id = "text_1",

@@ -3,13 +3,12 @@ import structlog
 import json
 from pathlib import Path
 import sys
+from tools.registry import tools_excutor, build_tool_message
 # root_path = Path(__file__).parent.parent
 # if str(root_path) not in sys.path:
 #     sys.path.append(str(root_path))
 
 from core.llm_client import LLMClient, get_llm_client
-from tools.base_tools import BaseTools, _tools
-from schemas.tools import TOOLS_SCHEMA
 logger = structlog.get_logger(__name__)
 
 SYSTEM_PROMPT = """
@@ -20,6 +19,11 @@ SYSTEM_PROMPT = """
 回复格式先输出[THINK]标签之后衔接思考过程。[ANSWER]标签后面衔接回答结果。
 回复示例：[THINK]\n用户问xx，我需要...\n[ANSWER]\n根据数据...
 回复禁止携带xml标签
+
+你在调用工具时，**禁止输出任何思考过程、标签、[THINK]、[ANSWER]这类中间推理文本**。
+只输出标准的function‑call工具调用，不要输出自然语言思考内容。
+所有推理只在function‑call内部完成，不要把思考写在输出文本中。
+如果需要向用户提问，直接在tool调用结束后的assistant content返回，不要混入工具参数
 """
 
 class AgentLoop():
@@ -73,11 +77,11 @@ class AgentLoop():
                 
                 for tc in tool_calls:
                     tc_name = tc.function.name
-                    tc_args = json.loads(tc.function.arguments)
+                    tc_args = tc.function.arguments
                     
-                    result = _tools.tools_excutor(tc_name, tc_args)
+                    result = tools_excutor(tc_name, tc_args)
                     
-                    messages.append({"role":"tool","tool_call_id":tc.id,"name":tc.function.name,"content":result})
+                    messages.append(build_tool_message(tc.id, result))
                     
                     logger.debug(
                         f"loop_{loop+1}_has_toolcall",
@@ -85,14 +89,12 @@ class AgentLoop():
                         arguments = tc_args,
                         result = result
                     )
-                    
-
                 
             else:
                 logger.debug(
-                                        f"loop_{loop+1}_has_no_toolcall",
-                                        content = choice.message.content
-                                    )
+                                f"loop_{loop+1}_has_no_toolcall",
+                                content = choice.message.content
+                            )
                 
                 await memory.append_history(session_id, {"role":"assistant","content":chat_content})
                 return chat_content
