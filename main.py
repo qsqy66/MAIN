@@ -3,6 +3,12 @@ from tools.registry import TOOLS_SCHEMA
 import asyncio
 from memory.redis import RedisMemory
 from structlog import get_logger
+from core.tracing import init_tracing, configure_structlog
+
+# ---- 应用启动时初始化 ----
+init_tracing()
+configure_structlog()
+
 logger = get_logger(__name__)
 
 async def main():
@@ -17,7 +23,7 @@ async def main():
         await redis_memory.connect()
         history = await redis_memory.get_history(session_id)
         logger.debug(f"history_loaded", count=f"读取到{len(history)}条历史记录")
-        
+
         answer = await agent.run(
                     session_id = session_id,
                     query = query,

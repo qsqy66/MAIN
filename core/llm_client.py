@@ -9,9 +9,11 @@ from openai import AsyncOpenAI,APITimeoutError,APIConnectionError,APIError
 from config import settings
 import structlog
 import asyncio
-
+import time
+from core.tracing import get_tracer, set_span_ok, set_span_error
 
 logger = structlog.get_logger(__name__)
+tracer = get_tracer("office_agent.llm")
 
 class LLMClient():
      
@@ -48,35 +50,57 @@ class LLMClient():
         if tools:
             kwargs["tools"] = tools
         
-        for attempt in range(settings.TOOL_MAX_RETRIES):
-            try:
-                resp = await self._client.chat.completions.create(**kwargs)
-                # 成功，打印日志并返回
-                logger.debug(
-                    "llm_chat_success",
-                    model = model,
-                    attempt = attempt+1,
-                    tokens = resp.usage.total_tokens if resp.usage else None,  
-                )
-                return resp
-            except (APIConnectionError,APITimeoutError) as e:
-                # 网络类型错误，可重试
-                wait_time = attempt + 1
-                logger.warning(
-                    "llm_retry_error",
-                    error=str(e),
-                    wait_time=wait_time,
-                )
-                if attempt + 1 < settings.LLM_MAX_RETRIES:
-                    await asyncio.sleep(wait_time)
-                
-            except APIError as e:
-                # 认证错误，不重试
-                logger.error(
-                    "llm_api_error",
-                    error=str(e)
+        with tracer.start_as_current_span(
+            "llm_chat",
+            attributes={
+                "model": model,
+                "llm.provider": "glm",
+                "llm.request.type": "chat",
+            },
+        ) as span:
+            t0 = time.time()
+            for attempt in range(settings.LLM_MAX_RETRIES):
+                try:
+                    resp = await self._client.chat.completions.create(**kwargs)
+                    # 成功
+                    elapsed_ms = (time.time() - t0) * 1000
+                    span.set_attributes({
+                        "llm.attempt": attempt + 1,
+                        "llm.tokens.total": resp.usage.total_tokens if resp.usage else 0,
+                        "llm.tokens.prompt": resp.usage.prompt_tokens if resp.usage else 0,
+                        "llm.tokens.completion": resp.usage.completion_tokens if resp.usage else 0,
+                        "llm.latency_ms": round(elapsed_ms, 1),
+                    })
+                    set_span_ok(span, "ok")
+                    logger.debug(
+                        "llm_chat_success",
+                        model = model,
+                        attempt = attempt+1,
+                        tokens = resp.usage.total_tokens if resp.usage else None,
                     )
-                raise
+                    return resp
+                except (APIConnectionError,APITimeoutError) as e:
+                    # 网络类型错误，可重试
+                    wait_time = attempt + 1
+                    logger.warning(
+                        "llm_retry_error",
+                        error=str(e),
+                        wait_time=wait_time,
+                    )
+                    span.set_attribute(f"llm.attempt_{attempt+1}_error", str(e))
+                    if attempt + 1 < settings.LLM_MAX_RETRIES:
+                        await asyncio.sleep(wait_time)
+
+                except APIError as e:
+                    # 认证错误，不重试
+                    set_span_error(span, e)
+                    logger.error(
+                        "llm_api_error",
+                        error=str(e)
+                        )
+                    raise
+
+            set_span_error(span, "LLM 调用重试全部失败")
 
         
         

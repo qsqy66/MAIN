@@ -3,6 +3,12 @@ from tools.registry import TOOLS_SCHEMA
 import asyncio
 from memory.redis import RedisMemory
 from structlog import get_logger
+from core.tracing import init_tracing, configure_structlog
+
+# ---- 应用启动时初始化 ----
+init_tracing()
+configure_structlog()
+
 logger = get_logger(__name__)
 
 async def main():

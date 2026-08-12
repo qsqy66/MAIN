@@ -1,11 +1,14 @@
 import json
 import structlog
+import time
 from tools.calculator import calculator
 from tools.web_search import web_search
 from tools.excel_reader import read_excel
+from core.tracing import get_tracer, set_span_ok, set_span_error
 import re
 
 logger = structlog.get_logger(__name__)
+tracer = get_tracer("office_agent.tools")
 tools_registry = {
         "calculator": calculator,
         "read_excel": read_excel,
@@ -16,24 +19,47 @@ def tools_excutor(
         name:str,
         arguments:str,
     ):
-        func = tools_registry.get(name)
-        if func is None:
-            result = f"未知工具"
-            return result
-        
-        try:
-            arguments = json.loads(arguments)
-        except json.JSONDecodeError as e:
-            logger.error(f"tool_arguments_decode_error", tool_name=name, error=str(e))
-            return f"工具参数解析异常：{str(e)}"
-        
-        try:
-            result = func(**arguments)
-            logger.info(f"tool_execution_success", tool_name=name, result=result)
-            return result
-        except Exception as e:
-            logger.error(f"tool_execution_error", tool_name=name, error=str(e))
-            return f"工具执行异常：{str(e)}"
+        with tracer.start_as_current_span(
+            f"tool.{name}",
+            attributes={"tool.name": name},
+        ) as span:
+            t0 = time.time()
+
+            func = tools_registry.get(name)
+            if func is None:
+                span.set_attribute("tool.error", "unknown_tool")
+                set_span_error(span, f"未知工具: {name}")
+                return "未知工具"
+
+            try:
+                arguments_parsed = json.loads(arguments)
+            except json.JSONDecodeError as e:
+                logger.error(f"tool_arguments_decode_error", tool_name=name, error=str(e))
+                span.set_attribute("tool.error", "json_decode")
+                set_span_error(span, e)
+                return f"工具参数解析异常：{str(e)}"
+
+            span.set_attribute("tool.arguments", arguments)
+
+            try:
+                result = func(**arguments_parsed)
+                elapsed_ms = (time.time() - t0) * 1000
+                span.set_attributes({
+                    "tool.result": str(result)[:500],
+                    "tool.latency_ms": round(elapsed_ms, 1),
+                })
+                set_span_ok(span, "ok")
+                logger.info(f"tool_execution_success", tool_name=name, result=result)
+                return result
+            except Exception as e:
+                elapsed_ms = (time.time() - t0) * 1000
+                span.set_attributes({
+                    "tool.error": str(e),
+                    "tool.latency_ms": round(elapsed_ms, 1),
+                })
+                set_span_error(span, e)
+                logger.error(f"tool_execution_error", tool_name=name, error=str(e))
+                return f"工具执行异常：{str(e)}"
         
 def build_tool_message(tool_call_id: str, content: str) -> dict:
     """组装OpenAI标准tool返回消息"""

@@ -120,6 +120,21 @@ class Settings:
     # =====================================================================
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
+    # =====================================================================
+    #  十一、Tracing（链路追踪）配置
+    # =====================================================================
+    # 是否启用 OpenTelemetry 链路追踪
+    TRACING_ENABLED: bool = os.getenv("TRACING_ENABLED", "false").lower() == "true"
+
+    # 导出器类型：console（打印到终端）/ otlp（发送到后端）/ none（关闭）
+    OTEL_EXPORTER_TYPE: str = os.getenv("OTEL_EXPORTER_TYPE", "console")
+
+    # OTLP 导出器地址（gRPC），仅 OTEL_EXPORTER_TYPE=otlp 时生效
+    OTEL_EXPORTER_ENDPOINT: str = os.getenv("OTEL_EXPORTER_ENDPOINT", "http://localhost:4317")
+
+    # 服务名称，在追踪后端中标识此服务
+    OTEL_SERVICE_NAME: str = os.getenv("OTEL_SERVICE_NAME", "office_agent")
+
 
 # ———— 全局单例 ————
 # 模块级变量在第一次 import 时初始化一次，之后所有地方共享同一实例。

@@ -1,15 +1,16 @@
 import asyncio
 import structlog
 import json
+import time
 from pathlib import Path
 import sys
 from tools.registry import tools_excutor, build_tool_message
-# root_path = Path(__file__).parent.parent
-# if str(root_path) not in sys.path:
-#     sys.path.append(str(root_path))
 
 from core.llm_client import LLMClient, get_llm_client
+from core.tracing import get_tracer, set_span_ok, set_span_error
+
 logger = structlog.get_logger(__name__)
+tracer = get_tracer("office_agent.agent_loop")
 
 SYSTEM_PROMPT = """
 你是一个办公助手智能体，具有调用计算器，读取excel文档进行数据查询和联网搜索的内容。
@@ -38,68 +39,93 @@ class AgentLoop():
         history: list,
         query: str,
     ):
+        with tracer.start_as_current_span(
+            "agent_run",
+            attributes={
+                "session.id": session_id,
+                "query.length": len(query),
+                "history.count": len(history) if history else 0,
+            },
+        ) as run_span:
+            t_start = time.time()
 
-        messages = history.copy() if history else []
-        messages.insert(0, {"role":"system","content":SYSTEM_PROMPT})
-        messages.append({"role":"user","content":query})
-        await memory.append_history(session_id, {"role":"user","content":query})
-        
-        for loop in range(15):
-            try:
-                resp = await self.llm.chat(
-                    messages = messages,
-                    tools = tools if tools else None
-                    )
-            except Exception as e:
-                logger.error(
-                    f"loop_{loop+1}_llm_error",
-                    error = f"模型调用异常，请稍后重试，错误信息：{str(e)}"
-                )
-                continue
-            
-            
-            choice = resp.choices[0]
-            
-            chat_content = choice.message.content or ""
-            tool_calls = choice.message.tool_calls
-            
-            if tool_calls:
+            messages = history.copy() if history else []
+            messages.insert(0, {"role":"system","content":SYSTEM_PROMPT})
+            messages.append({"role":"user","content":query})
+            await memory.append_history(session_id, {"role":"user","content":query})
 
-                messages.append({
-                    "role":"assistant",
-                    "content":chat_content,
-                    "tool_calls":[
-                        {"id":tc.id,"type":"function","function":{"name":tc.function.name,"arguments":tc.function.arguments}}
-                        for tc in tool_calls
-                    ]
-                })
-                
-                
-                for tc in tool_calls:
-                    tc_name = tc.function.name
-                    tc_args = tc.function.arguments
-                    
-                    result = tools_excutor(tc_name, tc_args)
-                    
-                    messages.append(build_tool_message(tc.id, result))
-                    
-                    logger.debug(
-                        f"loop_{loop+1}_has_toolcall",
-                        tcName = tc.function.name,
-                        arguments = tc_args,
-                        result = result
-                    )
-                
-            else:
-                logger.debug(
-                                f"loop_{loop+1}_has_no_toolcall",
-                                content = choice.message.content
+            for loop in range(15):
+                with tracer.start_as_current_span(
+                    f"agent_loop_{loop+1}",
+                    attributes={"loop.index": loop + 1},
+                ) as loop_span:
+                    try:
+                        resp = await self.llm.chat(
+                            messages = messages,
+                            tools = tools if tools else None
                             )
-                
-                await memory.append_history(session_id, {"role":"assistant","content":chat_content})
-                return chat_content
-            
-        return "处理步骤达到上限，请简化问题重试"
+                    except Exception as e:
+                        set_span_error(loop_span, e)
+                        logger.error(
+                            f"loop_{loop+1}_llm_error",
+                            error = f"模型调用异常，请稍后重试，错误信息：{str(e)}"
+                        )
+                        continue
+
+                    choice = resp.choices[0]
+
+                    chat_content = choice.message.content or ""
+                    tool_calls = choice.message.tool_calls
+
+                    if tool_calls:
+                        loop_span.set_attribute("has_tool_calls", True)
+                        loop_span.set_attribute("tool_call_count", len(tool_calls))
+
+                        messages.append({
+                            "role":"assistant",
+                            "content":chat_content,
+                            "tool_calls":[
+                                {"id":tc.id,"type":"function","function":{"name":tc.function.name,"arguments":tc.function.arguments}}
+                                for tc in tool_calls
+                            ]
+                        })
+
+                        for tc in tool_calls:
+                            tc_name = tc.function.name
+                            tc_args = tc.function.arguments
+
+                            result = tools_excutor(tc_name, tc_args)
+
+                            messages.append(build_tool_message(tc.id, result))
+
+                            logger.debug(
+                                f"loop_{loop+1}_has_toolcall",
+                                tcName = tc.function.name,
+                                arguments = tc_args,
+                                result = result
+                            )
+
+                    else:
+                        set_span_ok(loop_span, "final_answer")
+                        run_span.set_attribute("total_loops", loop + 1)
+
+                        total_elapsed_ms = (time.time() - t_start) * 1000
+                        run_span.set_attributes({
+                            "total_loops": loop + 1,
+                            "total_latency_ms": round(total_elapsed_ms, 1),
+                        })
+                        set_span_ok(run_span, "completed")
+
+                        logger.debug(
+                            f"loop_{loop+1}_has_no_toolcall",
+                            content = choice.message.content
+                        )
+
+                        await memory.append_history(session_id, {"role":"assistant","content":chat_content})
+                        return chat_content
+
+            set_span_error(run_span, "loop_limit_exceeded")
+            return "处理步骤达到上限，请简化问题重试"
             
             
     
