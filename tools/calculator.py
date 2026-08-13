@@ -1,6 +1,6 @@
 import math
 
-def calculator(expression: str) -> str:
+async def calculator(expression: str) -> str:
     try:
         safe_dict = {"abs":abs, "round":round, "max":max, "min":min,
                      "pow":pow, "sum":sum, "sqrt":math.sqrt,

@@ -12,7 +12,7 @@ tools_registry = {
         "web_search": web_search,
 }
     
-def tools_excutor(
+async def tools_excutor(
         name:str,
         arguments:str,
     ):
@@ -28,7 +28,7 @@ def tools_excutor(
             return f"工具参数解析异常：{str(e)}"
         
         try:
-            result = func(**arguments)
+            result = await func(**arguments)
             logger.info(f"tool_execution_success", tool_name=name, result=result)
             return result
         except Exception as e:

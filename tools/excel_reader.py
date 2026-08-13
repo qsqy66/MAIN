@@ -3,7 +3,7 @@ import pandas as pd
 
 DATA_DIR = Path(__file__).parent.parent / "data"
 
-def read_excel(filename: str, sheet_name: str) -> str:
+async def read_excel(filename: str, sheet_name: str) -> str:
     """
     读取Excel指定工作表；
     当传入的sheet_name不存在时，会直接返回该文件全部工作表名称，方便重新选择。

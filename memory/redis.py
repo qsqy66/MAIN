@@ -2,8 +2,9 @@ import json
 import structlog
 from redis import asyncio as aioredis
 from config import settings
+from core.tarce import TraceLog
 logger = structlog.get_logger(__name__)
-class RedisMemory:
+class Redis:
     def __init__(self, redis_url: str | None = settings.REDIS_URL):
         self.redis_url = redis_url
         self.redis: aioredis.Redis | None = None
@@ -42,7 +43,65 @@ class RedisMemory:
             except json.JSONDecodeError as e:
                 logger.error(f"{session_id}_history_decode_error", error=str(e))
         return messages
-    
+
+            
+    async def save_trace(self, trace: TraceLog):
+        key = self._trace_key(trace.trace_id)
+
+        # 手动遍历每一个TraceStep，不用step.model_dump()，直接读取属性
+        step_list = []
+        for step in trace.steps:
+            step_dict = {
+                "step_type": getattr(step, "step_type", None),
+                "description": getattr(step, "description", None),
+                "input_messages_count": getattr(step, "input_messages_count", None),
+                "output_content": getattr(step, "output_content", None),
+                "model_name": getattr(step, "model_name", None),
+                "tokens_used": getattr(step, "tokens_used", None),
+                "tool_name": getattr(step, "tool_name", None),
+                "tool_input": getattr(step, "tool_input", None),
+                "tool_output": getattr(step, "tool_output", None),
+                "timestamp": getattr(step, "timestamp", None)
+            }
+            # 过滤掉全空的step
+            step_dict = {k: v for k, v in step_dict.items() if v is not None}
+            step_list.append(step_dict)
+
+        # 顶层TraceLog手动组装，完全脱离pydantic model_dump递归
+        dump_dict = {
+            "trace_id": trace.trace_id,
+            "session_id": trace.session_id,
+            "start_time": trace.start_time,
+            "end_time": trace.end_time,
+            "final_answer": trace.final_answer,
+            "total_tokens": trace.total_tokens,
+            "error_summary": trace.error_summary,
+            "steps": step_list
+        }
+
+        # 直接json.dumps存入Redis
+        json_str = json.dumps(dump_dict, ensure_ascii=False)
+        await self.redis.set(key, json_str)
+        await self.redis.expire(key, 3600)
+    async def get_trace(self, trace_id: str) -> dict | None:
+        key = self._trace_key(trace_id)
+        value = await self.redis.get(key)
+        if value is None:
+            return None
+        try:
+            text = value.decode("utf-8")
+            data_dict = json.loads(text)
+            # 用Pydantic反向校验还原完整嵌套steps结构
+            trace_obj = TraceLog.model_validate(data_dict)
+            # 重新dump完整可打印字典
+            full_dump = trace_obj.model_dump(mode="json", exclude_none=True)
+            return full_dump
+        except json.JSONDecodeError as e:
+            logger.error(f"{trace_id}_trace_decode_error", error=str(e))
+            return None
+        except Exception as e:
+            logger.error(f"{trace_id}_trace_validate_error", error=str(e))
+            return None
     async def close(self):
         await self.redis.close()
         

@@ -1,4 +1,4 @@
-def web_search(query: str) -> str:
+async def web_search(query: str) -> str:
     MOCK = {
         "python": "Python由Guido van Rossum于1991年创建。",
         "langchain": "LangChain是LLM应用框架，支持Prompt/Chain/Agent。",

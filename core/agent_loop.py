@@ -4,10 +4,7 @@ import json
 from pathlib import Path
 import sys
 from tools.registry import tools_excutor, build_tool_message
-# root_path = Path(__file__).parent.parent
-# if str(root_path) not in sys.path:
-#     sys.path.append(str(root_path))
-
+from core.tarce import TraceLog, TraceStep
 from core.llm_client import LLMClient, get_llm_client
 logger = structlog.get_logger(__name__)
 
@@ -34,7 +31,7 @@ class AgentLoop():
         self,
         session_id,
         tools: list,
-        memory,
+        redis,
         history: list,
         query: str,
     ):
@@ -42,29 +39,47 @@ class AgentLoop():
         messages = history.copy() if history else []
         messages.insert(0, {"role":"system","content":SYSTEM_PROMPT})
         messages.append({"role":"user","content":query})
-        await memory.append_history(session_id, {"role":"user","content":query})
+        await redis.append_history(session_id, {"role":"user","content":query})
+        trace = TraceLog(session_id=session_id)
         
         for loop in range(15):
             try:
                 resp = await self.llm.chat(
                     messages = messages,
                     tools = tools if tools else None
-                    )
+                )
+                # 创建本轮LLM推理Step
+                step_llm: TraceStep = trace.add_step(
+                    step_type = "llm_infer",
+                    input_messages_count = len(messages),
+                    description = f"第{loop+1}轮模型推理",
+                )
+                
             except Exception as e:
+                err_msg = f"模型调用异常，请稍后重试，错误信息：{str(e)}"
                 logger.error(
                     f"loop_{loop+1}_llm_error",
-                    error = f"模型调用异常，请稍后重试，错误信息：{str(e)}"
+                    error = err_msg
                 )
+                trace.add_step(
+                    step_type = "error",
+                    description = f"第{loop+1}轮模型调用异常，错误信息：{str(e)}"
+                ).finish()
                 continue
             
-            
             choice = resp.choices[0]
-            
             chat_content = choice.message.content or ""
             tool_calls = choice.message.tool_calls
+
+            # 给当前LLM步骤填充完整数据并闭环
+            step_llm.output_content = chat_content
+            step_llm.output_tool_calls = tool_calls
+            step_llm.model_name = "glm-4.5-air"
+            step_llm.tokens_used = resp.usage.total_tokens
+            step_llm.finish()
             
             if tool_calls:
-
+                # 追加assistant工具调用消息
                 messages.append({
                     "role":"assistant",
                     "content":chat_content,
@@ -74,13 +89,11 @@ class AgentLoop():
                     ]
                 })
                 
-                
+                # 遍历执行所有工具调用并埋点
                 for tc in tool_calls:
                     tc_name = tc.function.name
                     tc_args = tc.function.arguments
-                    
-                    result = tools_excutor(tc_name, tc_args)
-                    
+                    result = await tools_excutor(tc_name, tc_args)
                     messages.append(build_tool_message(tc.id, result))
                     
                     logger.debug(
@@ -89,17 +102,28 @@ class AgentLoop():
                         arguments = tc_args,
                         result = result
                     )
-                
+                    # 工具调用Step直接add并finish
+                    trace.add_step(
+                        step_type = "tool_call",
+                        description = f"第{loop+1}轮工具调用，函数名：{tc.function.name}",
+                        tool_name = tc.function.name,
+                        tool_input = tc_args,
+                        tool_output = result
+                    ).finish()
             else:
+                # 无工具调用，直接收尾本轮对话
                 logger.debug(
-                                f"loop_{loop+1}_has_no_toolcall",
-                                content = choice.message.content
-                            )
-                
-                await memory.append_history(session_id, {"role":"assistant","content":chat_content})
-                return chat_content
-            
-        return "处理步骤达到上限，请简化问题重试"
-            
-            
-    
+                    f"loop_{loop+1}_has_no_toolcall",
+                    content = choice.message.content
+                )
+                # 设置最终答案（内部自动赋值end_time）
+                trace.set_final_answer(chat_content)
+                await redis.append_history(session_id, {"role":"assistant","content":chat_content})
+                await redis.save_trace(trace)
+                return chat_content, trace
+        
+        # 循环15轮耗尽上限兜底
+        over_limit_msg = "处理步骤达到上限，请简化问题重试"
+        trace.set_error(over_limit_msg)
+        await redis.save_trace(trace)
+        return over_limit_msg, trace
