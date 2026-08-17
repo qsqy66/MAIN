@@ -81,6 +81,14 @@ class LLMClient():
         
         
     
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        resp = await self._client.embeddings.create(
+            model=settings.GLM_EMBED_MODEL,
+            input=texts,
+        )
+        sorted_data = sorted(resp.data, key=lambda d: d.index)
+        return [item.embedding for item in sorted_data]
+
     async def stream_chat(
             self,
             messages:list,

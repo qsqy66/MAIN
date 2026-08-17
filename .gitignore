@@ -44,7 +44,7 @@ build/
 *.egg
 
 # —— 运行时数据 ——
-docs/
+#docs/
 chroma_data/
 *.db
 *.sqlite3
