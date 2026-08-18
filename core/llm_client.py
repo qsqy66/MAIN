@@ -159,7 +159,7 @@ class LLMClient():
             {"role": "user", "content": user_content},
         ]
         
-        resp = self.chat(
+        resp = await self.chat(
             messages = messages,
             temperature = temperature,
             max_tokens = max_tokens,

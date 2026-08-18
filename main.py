@@ -35,6 +35,7 @@ async def main():
             
             answer, trace = await agent.run(
                         session_id = session_id,
+                        user_id = "USER_001",
                         query = query,
                         tools = TOOLS_SCHEMA,
                         redis = redis,

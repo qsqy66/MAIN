@@ -20,6 +20,18 @@ class Redis:
     @staticmethod
     def _history_key(trace_id: str) -> str:
         return f"history:{trace_id}"
+
+    @staticmethod
+    def _session_summary_key(session_id: str) -> str:
+        return f"memory:st:{session_id}:summary"
+
+    @staticmethod
+    def _profile_key(user_id: str) -> str:
+        return f"memory:lt:{user_id}:profile"
+
+    @staticmethod
+    def _episodic_key(user_id: str) -> str:
+        return f"memory:lt:{user_id}:episodic"
     
     async def append_history(self, session_id: str, message: dict):
         key = self._history_key(session_id)
@@ -44,7 +56,54 @@ class Redis:
                 logger.error(f"{session_id}_history_decode_error", error=str(e))
         return messages
 
-            
+    # ==================== 短期记忆：会话摘要 ====================
+    async def get_session_summary(self, session_id: str) -> str | None:
+        key = self._session_summary_key(session_id)
+        value = await self.redis.get(key)
+        if value is None:
+            return None
+        return value.decode("utf-8")
+
+    async def save_session_summary(self, session_id: str, text: str):
+        key = self._session_summary_key(session_id)
+        await self.redis.set(key, text)
+        await self.redis.expire(key, settings.SESSION_TTL)
+
+    # ==================== 长期记忆：用户画像（语义记忆） ====================
+    async def get_profile(self, user_id: str) -> dict:
+        key = self._profile_key(user_id)
+        value = await self.redis.get(key)
+        if value is None:
+            return {}
+        try:
+            return json.loads(value.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            logger.error(f"{user_id}_profile_decode_error", error=str(e))
+            return {}
+
+    async def save_profile(self, user_id: str, profile: dict):
+        key = self._profile_key(user_id)
+        await self.redis.set(key, json.dumps(profile, ensure_ascii=False))
+        await self.redis.expire(key, settings.LT_MEMORY_TTL_DAYS * 86400)
+
+    # ==================== 长期记忆：情景记忆（带向量） ====================
+    async def get_episodic(self, user_id: str) -> list[dict]:
+        key = self._episodic_key(user_id)
+        value = await self.redis.get(key)
+        if value is None:
+            return []
+        try:
+            return json.loads(value.decode("utf-8"))
+        except json.JSONDecodeError as e:
+            logger.error(f"{user_id}_episodic_decode_error", error=str(e))
+            return []
+
+    async def save_episodic(self, user_id: str, records: list[dict]):
+        key = self._episodic_key(user_id)
+        await self.redis.set(key, json.dumps(records, ensure_ascii=False))
+        await self.redis.expire(key, settings.LT_MEMORY_TTL_DAYS * 86400)
+
+
     async def save_trace(self, trace: TraceLog):
         key = self._trace_key(trace.trace_id)
 

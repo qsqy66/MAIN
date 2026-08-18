@@ -6,6 +6,7 @@ import sys
 from tools.registry import tools_excutor, build_tool_message
 from core.tarce import TraceLog, TraceStep
 from core.llm_client import LLMClient, get_llm_client
+from memory.manager import get_memory_manager
 logger = structlog.get_logger(__name__)
 
 SYSTEM_PROMPT = """
@@ -24,6 +25,22 @@ SYSTEM_PROMPT = """
 如果需要向用户提问，直接在tool调用结束后的assistant content返回，不要混入工具参数
 """
 
+
+def _build_memory_block(memory_ctx: dict) -> str:
+    """把记忆上下文拼成可注入 system prompt 的文本段；无可注入内容返回空串。"""
+    parts = []
+    summary = memory_ctx.get("summary")
+    if summary:
+        parts.append("[短期记忆·本会话摘要]\n" + summary)
+    profile = memory_ctx.get("profile") or {}
+    if profile:
+        parts.append("[长期记忆·用户画像]\n" + "\n".join(f"- {k}：{v}" for k, v in profile.items()))
+    hits = memory_ctx.get("episodic_hits") or []
+    if hits:
+        parts.append("[长期记忆·相关历史]\n" + "\n".join(f"- {h['text']}" for h in hits))
+    return "\n\n".join(parts)
+
+
 class AgentLoop():
     def __init__(self):
         self.llm = get_llm_client()
@@ -31,18 +48,36 @@ class AgentLoop():
     async def run(
         self,
         session_id,
-        tools: list,
-        redis,
-        history: list,
-        query: str,
+        user_id: str | None = None,
+        tools: list = None,
+        redis = None,
+        history: list = None,
+        query: str = "",
     ):
 
+        user_id = user_id or session_id
         messages = history.copy() if history else []
         messages.insert(0, {"role":"system","content":SYSTEM_PROMPT})
         messages.append({"role":"user","content":query})
         await redis.append_history(session_id, {"role":"user","content":query})
         trace = TraceLog(session_id=session_id)
-        
+
+        # —— 记忆注入：短期(会话摘要) + 长期(用户画像 / 相关情景记忆) ——
+        # 记忆为空或加载失败时 memory_ctx 为空 dict，不注入任何内容，不影响主流程
+        memory_ctx = await get_memory_manager().load(user_id, session_id, query, redis)
+        memory_block = _build_memory_block(memory_ctx)
+        if memory_block:
+            messages[0]["content"] = (
+                SYSTEM_PROMPT
+                + "\n\n以下是为本次回答准备的记忆信息：\n"
+                + memory_block
+            )
+            logger.info(
+                "memory_injected",
+                profile = len(memory_ctx.get("profile", {})),
+                episodic = len(memory_ctx.get("episodic_hits", [])),
+            )
+
         for loop in range(15):
             try:
                 resp = await self.llm.chat(
@@ -120,11 +155,33 @@ class AgentLoop():
                 # 设置最终答案（内部自动赋值end_time）
                 trace.set_final_answer(chat_content)
                 await redis.append_history(session_id, {"role":"assistant","content":chat_content})
+                # 记忆写入：回答完成后提取画像/情景记忆，并在会话达到阈值时压缩摘要
+                messages.append({"role":"assistant","content":chat_content})
+                mem_res = await get_memory_manager().update(
+                    user_id, session_id, query, chat_content, messages, redis
+                )
+                trace.add_step(
+                    step_type = "memory",
+                    description = (
+                        f"记忆加载：画像{len(memory_ctx.get('profile', {}))}条、"
+                        f"情景{len(memory_ctx.get('episodic_hits', []))}条；"
+                        f"记忆更新：画像+{mem_res['profile_added']}、"
+                        f"情景+{mem_res['episodic_added']}、"
+                        f"摘要{'已更新' if mem_res['summary_updated'] else '未变'}"
+                    ),
+                ).finish()
                 await redis.save_trace(trace)
                 return chat_content, trace
         
         # 循环15轮耗尽上限兜底
         over_limit_msg = "处理步骤达到上限，请简化问题重试"
         trace.set_error(over_limit_msg)
+        trace.add_step(
+            step_type = "memory",
+            description = (
+                f"记忆加载：画像{len(memory_ctx.get('profile', {}))}条、"
+                f"情景{len(memory_ctx.get('episodic_hits', []))}条（本轮超限未写入记忆）"
+            ),
+        ).finish()
         await redis.save_trace(trace)
         return over_limit_msg, trace

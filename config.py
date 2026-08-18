@@ -74,6 +74,25 @@ class Settings:
     SUMMARY_TRIGGER_ROUNDS: int = int(os.getenv("SUMMARY_TRIGGER_ROUNDS", "6"))
 
     # =====================================================================
+    #  五·一、长期记忆（LT）配置
+    # =====================================================================
+    # 记忆总开关 — 关闭后行为与无记忆时完全一致（读空、写空、零延迟）
+    MEMORY_ENABLED: bool = os.getenv("MEMORY_ENABLED", "true").lower() in ("1", "true", "yes")
+
+    # 是否每轮回答后用轻量模型自动提取新记忆（画像更新 + 情景记忆）
+    MEMORY_EXTRACT: bool = os.getenv("MEMORY_EXTRACT", "true").lower() in ("1", "true", "yes")
+
+    # 情景记忆按相关性最多召回几条注入上下文
+    MEMORY_TOP_K: int = int(os.getenv("MEMORY_TOP_K", "3"))
+
+    # 长期记忆有效期（天），超期 Redis 自动清理
+    LT_MEMORY_TTL_DAYS: int = int(os.getenv("LT_MEMORY_TTL_DAYS", "90"))
+
+    # 长期记忆容量上限（画像事实条数 / 情景记录条数），防止无限膨胀
+    LT_PROFILE_MAX: int = int(os.getenv("LT_PROFILE_MAX", "30"))
+    LT_EPISODIC_MAX: int = int(os.getenv("LT_EPISODIC_MAX", "200"))
+
+    # =====================================================================
     #  六、RAG（检索增强生成）配置
     # =====================================================================
     # 文档存放目录 — PDF/Word/Excel 放这里，程序自动扫描

@@ -12,6 +12,7 @@ class StepType(StrEnum):
     ERROR = "error"
     RAG_RETRIEVE = "rag_retrieve"
     SUMMARY = "summary"
+    MEMORY = "memory"
 
 
 class TraceStep(BaseModel):
